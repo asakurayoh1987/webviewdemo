@@ -1,29 +1,43 @@
 package com.example.webviewdemo;
 
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 
 import android.graphics.Color;
+import android.graphics.Matrix;
+import android.graphics.SurfaceTexture;
+import android.graphics.drawable.Drawable;
+import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.KeyEvent;
+import android.view.Surface;
+import android.view.TextureView;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
+import android.widget.MediaController;
+import android.widget.RelativeLayout;
+import android.widget.VideoView;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Objects;
 
-public class WebViewActivity extends AppCompatActivity {
+public class WebViewActivity extends AppCompatActivity implements TextureView.SurfaceTextureListener {
 
     private WebView webView;
+    private TextureView textureView;
+    private MediaPlayer mediaPlayer;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -33,12 +47,13 @@ public class WebViewActivity extends AppCompatActivity {
         String url = getIntent().getStringExtra("url");
         Uri uri = Uri.parse(url);
 
-        Map<String, String> extraHeaders = new HashMap<String, String>();
+        Map<String, String> extraHeaders = new HashMap<>();
         extraHeaders.put("Referer", url);
 
         // 是否开启沉浸式
         boolean useImmerse = "1".equals(uri.getQueryParameter("immer"));
         boolean useLightStatusBar = "1".equals(uri.getQueryParameter("lightbar"));
+        String bgVideo = uri.getQueryParameter("bgvideo");
 
         setContentView(R.layout.activity_web_view);
 
@@ -48,6 +63,31 @@ public class WebViewActivity extends AppCompatActivity {
         getSupportActionBar().setDisplayHomeAsUpEnabled(true);
 
         webView = findViewById(R.id.webview);
+        webView.setBackgroundColor(0x00000000);
+
+        if (null != bgVideo) {
+            textureView = findViewById(R.id.textureView);
+            textureView.setSurfaceTextureListener(this);
+
+            Uri videoUri = Uri.parse(bgVideo);
+            mediaPlayer = new MediaPlayer();
+            try {
+                mediaPlayer.setDataSource(this, videoUri);
+                mediaPlayer.setLooping(true);
+                mediaPlayer.prepareAsync();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+
+            mediaPlayer.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+                @Override
+                public void onPrepared(MediaPlayer mp) {
+                    mp.start();
+                    adjustAspectRatio(mp.getVideoWidth(), mp.getVideoHeight());
+                }
+            });
+        }
+
 
         if (useImmerse) {
             // 设置全屏展示，状态栏颜色为透明
@@ -112,26 +152,27 @@ public class WebViewActivity extends AppCompatActivity {
         });
 
         webView.loadUrl(url);
+//        webView.loadUrl("https://vring.kuyin123.com/friend/d0b23f78c27e9078?videoId=1203865234498912256&immer=1&bgvideo=https%3A%2F%2Fvracloss.kuyin123.com%2F11W2MYCO%2Frescloud1%2F688312df2748437b8b2123aa235fae06.mp4%3Frestype%3D2%26a%3Dd0b23f78c27e9078%26resid%3D1203865234498912256%26subtype%3D3#/login");
     }
 
+//    @Override
+//    public boolean onKeyDown(int keyCode, KeyEvent event) {
+//        if (keyCode == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
+//            webView.goBack();
+//            return true;
+//        }
+//        return super.onKeyDown(keyCode, event);
+//    }
+
     @Override
-    public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
-            webView.goBack();
-            return true;
-        }
-        return super.onKeyDown(keyCode, event);
+    public void onBackPressed() {
+        webviewGoBack();
     }
 
     @Override
     public boolean onSupportNavigateUp() {
-        if (webView.canGoBack()) {
-            webView.goBack();
-            return true;
-        } else {
-            finish();
-            return true;
-        }
+        webviewGoBack();
+        return true;
     }
 
     // 获取状态栏高度
@@ -144,9 +185,79 @@ public class WebViewActivity extends AppCompatActivity {
         return statusBarHeight;
     }
 
+    private void webviewGoBack() {
+        if (webView.canGoBack()) {
+            webView.goBack();
+        } else {
+            finish();
+        }
+    }
+
+    private void webviewGoBackWithJS() {
+        webView.evaluateJavascript("typeof (window.KuYin && window.KuYin.ine && window.KuYin.ine.goBack) === 'function'", new ValueCallback<String>() {
+            @Override
+            public void onReceiveValue(String value) {
+                boolean isMethodExists = "true".equals(value);
+                if (isMethodExists) {
+                    webView.loadUrl("javascript:KuYin.ine.goBack()");
+                } else if (webView.canGoBack()) {
+                    webView.goBack();
+                } else {
+                    finish();
+                }
+            }
+        });
+    }
+
+    @Override
+    public void onSurfaceTextureAvailable(@NonNull SurfaceTexture surfaceTexture, int width, int height) {
+        Surface surface = new Surface(surfaceTexture);
+        mediaPlayer.setSurface(surface);
+        surface.release();
+    }
+
+    @Override
+    public void onSurfaceTextureSizeChanged(@NonNull SurfaceTexture surface, int width, int height) {
+
+    }
+
+    @Override
+    public boolean onSurfaceTextureDestroyed(@NonNull SurfaceTexture surface) {
+        return false;
+    }
+
+    @Override
+    public void onSurfaceTextureUpdated(@NonNull SurfaceTexture surface) {
+
+    }
+
+    private void adjustAspectRatio(int videoWidth, int videoHeight) {
+        int viewWidth = textureView.getWidth();
+        int viewHeight = textureView.getHeight();
+
+        float scaleX = (float) viewWidth / videoWidth;
+        float scaleY = (float) viewHeight / videoHeight;
+        float pivotX = viewWidth * 0.5f;
+        float pivotY = viewHeight * 0.5f;
+
+        Matrix matrix = new Matrix();
+        matrix.setScale(scaleX, scaleY, pivotX, pivotY);
+        textureView.setTransform(matrix);
+    }
+
     public class WebViewJsInject {
         @JavascriptInterface
         public void closeWindow() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    finish();  // 关闭当前的 WebView 所在的 Activity
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void backToClient() {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
@@ -163,6 +274,15 @@ public class WebViewActivity extends AppCompatActivity {
                     finish();  // 关闭当前的 WebView 所在的 Activity
                 }
             });
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (mediaPlayer != null) {
+            mediaPlayer.release();
+            mediaPlayer = null;
         }
     }
 }
