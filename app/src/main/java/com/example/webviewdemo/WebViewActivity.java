@@ -127,6 +127,9 @@ public class WebViewActivity extends AppCompatActivity implements TextureView.Su
         // 启用JavaScript
         WebSettings webSettings = webView.getSettings();
         webSettings.setJavaScriptEnabled(true);
+        webSettings.setDomStorageEnabled(true);
+//        webSettings.setBuiltInZoomControls(false);
+//        webSettings.setSupportZoom(false);
 
         // 禁用缓存
         webSettings.setCacheMode(WebSettings.LOAD_NO_CACHE);
