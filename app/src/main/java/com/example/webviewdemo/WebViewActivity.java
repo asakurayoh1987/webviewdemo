@@ -1,9 +1,16 @@
 package com.example.webviewdemo;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 
+import android.app.Activity;
+import android.content.ActivityNotFoundException;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.SurfaceTexture;
@@ -19,9 +26,16 @@ import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.webkit.ConsoleMessage;
+import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -30,14 +44,30 @@ import android.widget.MediaController;
 import android.widget.RelativeLayout;
 import android.widget.VideoView;
 
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+
+import kotlin.text.Regex;
 
 public class WebViewActivity extends AppCompatActivity implements TextureView.SurfaceTextureListener {
 
     private WebView webView;
     private TextureView textureView;
     private MediaPlayer mediaPlayer;
+
+    private ValueCallback<Uri[]> mFilePathCallback;
+    private final static int FILECHOOSER_RESULTCODE = 1;
+
+    private boolean shouldAllowUnload = false;
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        Log.d("WebView", "Trim Memory Level: " + level);
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -90,28 +120,35 @@ public class WebViewActivity extends AppCompatActivity implements TextureView.Su
 
 
         if (useImmerse) {
-            // 设置全屏展示，状态栏颜色为透明
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                Window window = getWindow();
-                window.addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
-                window.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                        | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
-                window.setStatusBarColor(Color.TRANSPARENT);
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                getWindow().addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
-            }
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                // 调整webview的位置，使其与状态栏重合
-                int statusBarHeight = getStatusBarHeight();
-                Log.d("DEBUG", "status bar height:" + statusBarHeight);
-                webView.setPadding(0, statusBarHeight, 0, 0);
-            }
-
             // 隐藏导航栏
             toolbar.setVisibility(View.GONE);
+
+            Window window = getWindow();
+            window.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+            window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            window.setStatusBarColor(Color.TRANSPARENT);
+            window.setNavigationBarColor(Color.TRANSPARENT);
+
+            window.getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            );
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                webView.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+                    @NonNull
+                    @Override
+                    public WindowInsets onApplyWindowInsets(@NonNull View view, @NonNull WindowInsets windowInsets) {
+                        int bottomInset = windowInsets.getSystemWindowInsetBottom();
+                        view.setPadding(0, 0, 0, 0);
+                        return windowInsets.consumeSystemWindowInsets();
+                    }
+                });
+            }
         }
+
+
 
         // 设置状态栏图标为深色
         if (useLightStatusBar) {
@@ -119,20 +156,24 @@ public class WebViewActivity extends AppCompatActivity implements TextureView.Su
         }
 
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-            // 开启debug功能
-            WebView.setWebContentsDebuggingEnabled(true);
-        }
+        // 开启debug功能
+        WebView.setWebContentsDebuggingEnabled(true);
+
 
         // 启用JavaScript
         WebSettings webSettings = webView.getSettings();
         webSettings.setJavaScriptEnabled(true);
         webSettings.setDomStorageEnabled(true);
+
+        webSettings.setLoadWithOverviewMode(true);  // 缩放至屏幕的大小
+        webSettings.setUseWideViewPort(true);  // 将图片调整到适合 WebView 的大小
+
 //        webSettings.setBuiltInZoomControls(false);
 //        webSettings.setSupportZoom(false);
 
         // 禁用缓存
         webSettings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+//        webSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
 
         // javascript方法注入
         WebViewActivity.WebViewJsInject inject = new WebViewActivity.WebViewJsInject();
@@ -147,10 +188,61 @@ public class WebViewActivity extends AppCompatActivity implements TextureView.Su
                 return true;
             }
 
+
+            @Override
+            public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                super.onPageStarted(view, url, favicon);
+                Log.d("WebView", "Page loading started: " + url);
+            }
+
             @Override
             public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                Log.d("WebView", "Page loading finished: " + url);
                 String title = view.getTitle();
                 getSupportActionBar().setTitle(title);
+            }
+
+            @Override
+            public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                super.onReceivedError(view, request, error);
+                Log.e("WebView", "Error loading page: " + error.getDescription());
+            }
+
+            @Nullable
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                Log.d("WebView Request", "{ url: \"" + request.getUrl().toString().replaceAll("https?://", "") + "\", method: \"" + request.getMethod() + "\" }");
+                return null;
+            }
+        });
+
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
+                Log.d("WebView Console", consoleMessage.message() + " -- From line "
+                        + consoleMessage.lineNumber() + " of "
+                        + consoleMessage.sourceId());
+                return super.onConsoleMessage(consoleMessage);
+            }
+
+            @Override
+            public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
+                // 确保没有其他文件选择对话框已经打开
+                if (mFilePathCallback != null) {
+                    mFilePathCallback.onReceiveValue(null);
+                }
+                mFilePathCallback = filePathCallback;
+
+                // 创建Intent以选择文件
+                Intent intent = fileChooserParams.createIntent();
+                try {
+                    startActivityForResult(intent, FILECHOOSER_RESULTCODE);
+                } catch (ActivityNotFoundException e) {
+                    mFilePathCallback = null;
+                    return false;
+                }
+                return true;
             }
         });
 
@@ -167,10 +259,10 @@ public class WebViewActivity extends AppCompatActivity implements TextureView.Su
 //        return super.onKeyDown(keyCode, event);
 //    }
 
-    @Override
-    public void onBackPressed() {
-        webviewGoBack();
-    }
+//    @Override
+//    public void onBackPressed() {
+//        webviewGoBack();
+//    }
 
     @Override
     public boolean onSupportNavigateUp() {
@@ -191,6 +283,7 @@ public class WebViewActivity extends AppCompatActivity implements TextureView.Su
     private void webviewGoBack() {
         if (webView.canGoBack()) {
             webView.goBack();
+//            webView.getSettings().setCacheMode(WebSettings.LOAD_DEFAULT);
         } else {
             finish();
         }
@@ -283,9 +376,63 @@ public class WebViewActivity extends AppCompatActivity implements TextureView.Su
     @Override
     protected void onDestroy() {
         super.onDestroy();
+
+        // 清除所有的Cookies
+        CookieManager cookieManager = CookieManager.getInstance();
+
+        String url = ".diyring.cc";
+        String cookies = cookieManager.getCookie(url);
+
+        // 解析cookies字符串，选择性保存
+        Map<String, String> savedCookies = new HashMap<>();
+        if (cookies != null) {
+            String[] cookieArray = cookies.split(";");
+            for (String cookie : cookieArray) {
+                String[] cookieKV = cookie.split("=");
+                savedCookies.put(cookieKV[0], cookieKV[1]);
+            }
+        }
+
+        // 清除所有Cookies
+        cookieManager.removeAllCookies(null);
+
+        // 将需要保存的cookies重新设置回WebView
+        for (Map.Entry<String, String> entry : savedCookies.entrySet()) {
+            cookieManager.setCookie(url, entry.getKey() + "=" + entry.getValue());
+        }
+
+        cookieManager.flush();
+
         if (mediaPlayer != null) {
             mediaPlayer.release();
             mediaPlayer = null;
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent intent) {
+        super.onActivityResult(requestCode, resultCode, intent);
+
+        if (requestCode == FILECHOOSER_RESULTCODE) {
+            if (mFilePathCallback != null) {
+                Uri[] results = null;
+
+                // 检查响应是否成功
+                if (resultCode == Activity.RESULT_OK) {
+                    if (intent == null) {
+                        // 如果没有intent，则可能使用了相机
+                        // 这里可以处理相机拍摄的图片
+                    } else {
+                        String dataString = intent.getDataString();
+                        if (dataString != null) {
+                            results = new Uri[]{Uri.parse(dataString)};
+                        }
+                    }
+                }
+
+                mFilePathCallback.onReceiveValue(results);
+                mFilePathCallback = null;
+            }
         }
     }
 }
