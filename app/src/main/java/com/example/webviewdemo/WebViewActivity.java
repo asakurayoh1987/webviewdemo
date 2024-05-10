@@ -7,14 +7,11 @@ import androidx.appcompat.widget.Toolbar;
 
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
-import android.content.Context;
 import android.content.Intent;
-import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.SurfaceTexture;
-import android.graphics.drawable.Drawable;
 import android.media.MediaPlayer;
 import android.net.Uri;
 import android.os.Build;
@@ -24,7 +21,6 @@ import android.view.KeyEvent;
 import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
@@ -39,18 +35,19 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.FrameLayout;
-import android.widget.MediaController;
-import android.widget.RelativeLayout;
-import android.widget.VideoView;
 
-import java.io.IOException;
+import org.json.JSONObject;
+
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-
-import kotlin.text.Regex;
+import java.io.InputStream;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.util.zip.GZIPInputStream;
 
 public class WebViewActivity extends AppCompatActivity implements TextureView.SurfaceTextureListener {
 
@@ -84,6 +81,8 @@ public class WebViewActivity extends AppCompatActivity implements TextureView.Su
         boolean useImmerse = "1".equals(uri.getQueryParameter("immer"));
         boolean useLightStatusBar = "1".equals(uri.getQueryParameter("lightbar"));
         String bgVideo = uri.getQueryParameter("bgvideo");
+        boolean noCache = "1".equals(uri.getQueryParameter("nocache"));
+        boolean inspect = "1".equals(uri.getQueryParameter("inspect"));
 
         setContentView(R.layout.activity_web_view);
 
@@ -149,7 +148,6 @@ public class WebViewActivity extends AppCompatActivity implements TextureView.Su
         }
 
 
-
         // 设置状态栏图标为深色
         if (useLightStatusBar) {
             getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
@@ -172,8 +170,13 @@ public class WebViewActivity extends AppCompatActivity implements TextureView.Su
 //        webSettings.setSupportZoom(false);
 
         // 禁用缓存
-        webSettings.setCacheMode(WebSettings.LOAD_NO_CACHE);
-//        webSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
+        if (noCache) {
+            webSettings.setCacheMode(WebSettings.LOAD_NO_CACHE);
+        } else {
+            webSettings.setCacheMode(WebSettings.LOAD_DEFAULT);
+        }
+
+        webSettings.setMediaPlaybackRequiresUserGesture(true);
 
         // javascript方法注入
         WebViewActivity.WebViewJsInject inject = new WebViewActivity.WebViewJsInject();
@@ -212,15 +215,85 @@ public class WebViewActivity extends AppCompatActivity implements TextureView.Su
             @Nullable
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                Log.d("WebView Request", "{ url: \"" + request.getUrl().toString().replaceAll("https?://", "") + "\", method: \"" + request.getMethod() + "\" }");
-                return null;
+                try {
+                    URL url = new URL(request.getUrl().toString());
+                    String method = request.getMethod();
+
+                    // 构建 JSON 对象
+                    JSONObject json = new JSONObject();
+                    json.put("URL", request.getUrl().toString());
+                    json.put("Method", method);
+
+                    if(!inspect) {
+                        Log.d("WebView_Request", json.toString());
+                        return null;
+                    } else {
+                        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                        connection.setRequestProperty("Accept-Encoding", "gzip");
+                        connection.setInstanceFollowRedirects(true);
+                        connection.connect();
+
+                        int responseCode = connection.getResponseCode();
+
+                        Map<String, List<String>> responseHeaders = connection.getHeaderFields();
+
+                        InputStream inputStream = connection.getInputStream();
+                        String contentType = connection.getContentType();
+                        if (contentType == null) {
+                            contentType = "text/html; charset=utf-8";
+                        }
+                        String encoding = connection.getContentEncoding();
+                        if (encoding == null) {
+                            encoding = "utf-8"; // 设置默认编码
+                        }
+
+                        json.put("Status Code", responseCode);
+                        json.put("Content-Type", contentType);
+                        json.put("Content-Encoding", encoding);
+
+                        if (responseHeaders.containsKey("Content-Length")) {
+                            json.put("Content-Length", responseHeaders.get("Content-Length").get(0));
+                        }
+
+                        // 使用 Log.d 打印 JSON 字符串
+                        Log.d("WebView_Request", json.toString());
+
+                        // 检查内容是否为 gzip 压缩
+                        if ("gzip".equalsIgnoreCase(encoding)) {
+                            // 创建 GZIPInputStream 解压数据
+                            ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+                            GZIPInputStream gzipInputStream = new GZIPInputStream(inputStream);
+                            byte[] buffer = new byte[1024];
+                            int len;
+                            while ((len = gzipInputStream.read(buffer)) != -1) {
+                                byteArrayOutputStream.write(buffer, 0, len);
+                            }
+                            gzipInputStream.close();
+                            inputStream = new ByteArrayInputStream(byteArrayOutputStream.toByteArray());
+
+                            // 设置正确的 Content-Length
+                            int contentLength = byteArrayOutputStream.size();
+                            responseHeaders.put("Content-Length", Arrays.asList(String.valueOf(contentLength)));
+
+                            // 移除 Content-Encoding，因为内容不再是压缩的
+                            responseHeaders.remove("Content-Encoding");
+                            encoding = "utf-8";
+                        }
+
+                        return new WebResourceResponse(contentType, encoding, inputStream);
+                    }
+
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    return null;
+                }
             }
         });
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
             public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
-                Log.d("WebView Console", consoleMessage.message() + " -- From line "
+                Log.d("WebView_Console", consoleMessage.message() + " -- From line "
                         + consoleMessage.lineNumber() + " of "
                         + consoleMessage.sourceId());
                 return super.onConsoleMessage(consoleMessage);
@@ -250,19 +323,20 @@ public class WebViewActivity extends AppCompatActivity implements TextureView.Su
 //        webView.loadUrl("https://vring.kuyin123.com/friend/d0b23f78c27e9078?videoId=1203865234498912256&immer=1&bgvideo=https%3A%2F%2Fvracloss.kuyin123.com%2F11W2MYCO%2Frescloud1%2F688312df2748437b8b2123aa235fae06.mp4%3Frestype%3D2%26a%3Dd0b23f78c27e9078%26resid%3D1203865234498912256%26subtype%3D3#/login");
     }
 
-//    @Override
-//    public boolean onKeyDown(int keyCode, KeyEvent event) {
-//        if (keyCode == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
-//            webView.goBack();
-//            return true;
-//        }
-//        return super.onKeyDown(keyCode, event);
-//    }
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK && webView.canGoBack()) {
+            webView.goBack();
+            return true;
+        }
+        return super.onKeyDown(keyCode, event);
+    }
 
-//    @Override
-//    public void onBackPressed() {
-//        webviewGoBack();
-//    }
+    @Override
+    public void onBackPressed() {
+        super.onBackPressed();
+        webviewGoBack();
+    }
 
     @Override
     public boolean onSupportNavigateUp() {
